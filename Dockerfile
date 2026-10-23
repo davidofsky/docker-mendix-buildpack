@@ -37,15 +37,23 @@ COPY scripts/startup.py scripts/vcap_application.json /opt/mendix/build/
 # 2. Set permissions for compilation scripts
 # 3. Navigate to buildpack directory
 # 4. Call compilation script
-# 5. Remove temporary files
-# 6. Create symlink for java prefs used by CF buildpack
-# 7. Update ownership of /opt/mendix so that the app can run as a non-root user
-# 8. Update permissions of /opt/mendix so that the app can run as a non-root user
+# 5. Remove the eMudhra certificates from the Java truststore, their intermediates are compromised (CVE-2026-91403)
+#    and fail the build if one is still trusted afterwards
+# 6. Remove temporary files
+# 7. Create symlink for java prefs used by CF buildpack
+# 8. Update ownership of /opt/mendix so that the app can run as a non-root user
+# 9. Update permissions of /opt/mendix so that the app can run as a non-root user
 RUN mkdir -p /tmp/buildcache/bust /tmp/cf-deps /var/mendix/build /var/mendix/build/.local &&\
     chmod +rx /opt/mendix/buildpack/compilation.py /opt/mendix/buildpack/buildpack/stage.py /opt/mendix/build/startup.py &&\
     cd /opt/mendix/buildpack &&\
     ./compilation.py /opt/mendix/build /tmp/buildcache /tmp/cf-deps 0 &&\
-    rm -fr /tmp/buildcache /tmp/javasdk /tmp/opt /tmp/downloads /opt/mendix/buildpack/compilation.py /var/mendix &&\
+    for KS in /opt/mendix/build/.local/usr/lib/jvm/*/lib/security/cacerts; do \
+      KT="${KS%/lib/security/cacerts}/bin/keytool"; \
+      "$KT" -list -v -keystore "$KS" -storepass changeit | awk '/^Alias name:/{a=substr($0,13)} /^Owner:.*eMudhra/{print a}' | \
+        while read -r A; do "$KT" -delete -alias "$A" -keystore "$KS" -storepass changeit; done; \
+      "$KT" -list -v -keystore "$KS" -storepass changeit > /tmp/truststore.txt && ! grep -q '^Owner:.*eMudhra' /tmp/truststore.txt || exit 1; \
+    done &&\
+    rm -fr /tmp/truststore.txt /tmp/buildcache /tmp/javasdk /tmp/opt /tmp/downloads /opt/mendix/buildpack/compilation.py /var/mendix &&\
     ln -s /opt/mendix/.java /opt/mendix/build &&\
     chown -R ${USER_UID}:0 /opt/mendix &&\
     chmod -R g=u /opt/mendix
